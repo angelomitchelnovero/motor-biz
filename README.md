@@ -27,8 +27,3 @@ Default login: `admin` / `admin123` (forced to change on first run).
 - `electron/migrations/` — SQL migrations applied at startup
 - `src/` — React renderer (pages, components, hooks, store)
 - `scripts/dev.js` — orchestrates Vite + tsc --watch + Electron
-
-## BIR notes
-
-- Receipts include business TIN, BIR-ATP serial, configurable SI/OR series per branch+terminal, 12% VAT breakdown, SC/PWD discount block.
-- E-invoicing API integration is a deferred phase-2 drop-in (see `electron/services/receiptPdf.ts`).
