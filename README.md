@@ -1,6 +1,6 @@
 # motor-biz — Motor-Shop POS + Inventory
 
-Offline-first Electron desktop app for a Philippine motor-shop. Parts + services, job orders, BIR-formatted receipts, multi-user roles with audit log.
+Offline-first Electron desktop app for a motor-shop.
 
 ## Stack
 
