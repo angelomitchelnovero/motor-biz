@@ -101,7 +101,6 @@ export default function Items() {
         </div>
         <div className="row">
           <div className="field"><label>Reorder point</label><input className="input" type="number" value={create.reorder_point ?? 0} onChange={(e) => setCreate({ ...create, reorder_point: +e.target.value || 0 })} /></div>
-          <div className="field"><label>Reorder qty</label><input className="input" type="number" value={create.reorder_qty ?? 0} onChange={(e) => setCreate({ ...create, reorder_qty: +e.target.value || 0 })} /></div>
           <div className="field"><label>Location</label><input className="input" value={create.location ?? ''} onChange={(e) => setCreate({ ...create, location: e.target.value })} /></div>
         </div>
       </Modal>

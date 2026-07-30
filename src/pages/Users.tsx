@@ -4,7 +4,7 @@ import { showToast } from '../components/Toast';
 import { can } from '../permissions';
 import { useAuth } from '../hooks/useAuth';
 
-const ROLES = ['owner','manager','cashier','mechanic','inv_clerk','accountant','auditor'];
+const ROLES = ['owner','manager','cashier','stock_clerk'];
 
 export default function Users() {
   const { user } = useAuth();

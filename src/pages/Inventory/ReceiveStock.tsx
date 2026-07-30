@@ -7,12 +7,6 @@ export default function ReceiveStock() {
   const [search, setSearch] = useState('');
   const [matches, setMatches] = useState<any[]>([]);
   const [lines, setLines] = useState<Line[]>([]);
-  const [suppliers, setSuppliers] = useState<any[]>([]);
-  const [supplierId, setSupplierId] = useState<number | null>(null);
-
-  useEffect(() => {
-    window.api.suppliers.list().then(setSuppliers);
-  }, []);
 
   useEffect(() => {
     if (!search) { setMatches([]); return; }
@@ -36,7 +30,7 @@ export default function ReceiveStock() {
     if (ok.length === 0) { showToast({ kind: 'warn', text: 'Add qty > 0 on at least one line' }); return; }
     for (const l of ok) {
       try {
-        await window.api.stock.receive({ item_id: l.item_id, qty: l.qty, unit_cost: l.unit_cost, supplier_id: supplierId });
+        await window.api.stock.receive({ item_id: l.item_id, qty: l.qty, unit_cost: l.unit_cost });
       } catch (e: any) { showToast({ kind: 'error', text: `${l.sku}: ${e.message}` }); return; }
     }
     showToast({ text: `Received ${ok.length} line(s)` });
@@ -47,17 +41,8 @@ export default function ReceiveStock() {
     <>
       <div className="page-title"><h1>Receive Stock</h1></div>
       <div className="card">
-        <div className="row">
-          <input className="input" placeholder="Search SKU or name…" value={search}
-            onChange={(e) => setSearch(e.target.value)} autoFocus />
-          <div className="field">
-            <label>Supplier (optional)</label>
-            <select className="select" value={supplierId ?? ''} onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : null)}>
-              <option value="">— none —</option>
-              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-        </div>
+        <input className="input" placeholder="Search SKU or name…" value={search}
+          onChange={(e) => setSearch(e.target.value)} autoFocus />
         {matches.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
             {matches.slice(0, 10).map((m) => (
@@ -70,7 +55,7 @@ export default function ReceiveStock() {
       {lines.length > 0 && (
         <div className="card" style={{ padding: 0 }}>
           <table className="table">
-            <thead><tr><th>SKU</th><th>Name</th><th>Qty</th><th>Unit cost</th><th>Line total</th><th></th></tr></thead>
+            <thead><tr><th>SKU</th><th>Name</th><th>Qty</th><th>Unit cost</th><th className="num">Line total</th><th></th></tr></thead>
             <tbody>
               {lines.map((l) => (
                 <tr key={l.item_id}>

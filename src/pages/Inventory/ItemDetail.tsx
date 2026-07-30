@@ -71,7 +71,6 @@ export default function ItemDetail() {
           <tbody>
             <Field label="SKU" value={item.sku} edit={editing} v={draft.sku} onV={(v) => setDraft({ ...draft, sku: v })} />
             <Field label="Barcode" value={item.barcode ?? ''} edit={editing} v={draft.barcode ?? ''} onV={(v) => setDraft({ ...draft, barcode: v || null })} />
-            <Field label="Part #" value={item.part_number ?? ''} edit={editing} v={draft.part_number ?? ''} onV={(v) => setDraft({ ...draft, part_number: v })} />
             <Field label="Name" value={item.name} edit={editing} v={draft.name} onV={(v) => setDraft({ ...draft, name: v })} />
             <Field label="Category" value={item.category ?? ''} edit={editing} v={draft.category ?? ''} onV={(v) => setDraft({ ...draft, category: v })} />
             <Field label="Brand" value={item.brand ?? ''} edit={editing} v={draft.brand ?? ''} onV={(v) => setDraft({ ...draft, brand: v })} />
@@ -79,7 +78,6 @@ export default function ItemDetail() {
             <Field label="Cost" value={peso(item.cost)} edit={editing} v={String(draft.cost)} onV={(v) => setDraft({ ...draft, cost: +v || 0 })} numeric />
             <Field label="Price" value={peso(item.price)} edit={editing} v={String(draft.price)} onV={(v) => setDraft({ ...draft, price: +v || 0 })} numeric />
             <Field label="Reorder pt" value={item.reorder_point} edit={editing} v={String(draft.reorder_point)} onV={(v) => setDraft({ ...draft, reorder_point: +v || 0 })} numeric />
-            <Field label="Reorder qty" value={item.reorder_qty} edit={editing} v={String(draft.reorder_qty)} onV={(v) => setDraft({ ...draft, reorder_qty: +v || 0 })} numeric />
             <Field label="Location" value={item.location ?? ''} edit={editing} v={draft.location ?? ''} onV={(v) => setDraft({ ...draft, location: v })} />
             <tr><td colSpan={2}><strong>Stock on hand:</strong> {item.stock_on_hand} {item.unit} ({peso(item.stock_value ?? 0)})</td></tr>
           </tbody>

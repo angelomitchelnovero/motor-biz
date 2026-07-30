@@ -6,7 +6,7 @@ import { assertCan } from '../services/permissions';
 import { recordMovement, stockOnHand } from '../services/stockLedger';
 
 export function registerStockHandlers(): void {
-  ipcMain.handle('stock:receive', (_e, input: { item_id: number; qty: number; unit_cost: number; supplier_id?: number | null; reason?: string }) => {
+  ipcMain.handle('stock:receive', (_e, input: { item_id: number; qty: number; unit_cost: number; reason?: string }) => {
     const u = requireUser();
     assertCan(u.role, 'stock.receive');
     if (input.qty <= 0) throw new Error('qty must be > 0');
@@ -18,8 +18,8 @@ export function registerStockHandlers(): void {
       type: 'receive',
       qty: input.qty,
       unit_cost: input.unit_cost ?? 0,
-      reference_type: input.supplier_id ? 'supplier' : null,
-      reference_id: input.supplier_id ?? null,
+      reference_type: null,
+      reference_id: null,
       reason: input.reason ?? null,
       user_id: u.id,
     });
@@ -81,15 +81,15 @@ export function registerStockHandlers(): void {
       SELECT
         i.id AS item_id, i.sku, i.name, i.category, i.unit,
         COALESCE(SUM(CASE
-          WHEN m.type IN ('receive','transfer_in','refund_in') THEN m.qty
-          WHEN m.type IN ('sold','used_in_jo','transfer_out','return_supplier','damaged') THEN -m.qty
+          WHEN m.type IN ('receive','refund_in') THEN m.qty
+          WHEN m.type = 'sold' THEN -m.qty
           WHEN m.type = 'adjust' THEN m.qty
           ELSE 0
         END), 0) AS qty,
         i.cost, i.reorder_point,
         CASE WHEN COALESCE(SUM(CASE
-          WHEN m.type IN ('receive','transfer_in','refund_in') THEN m.qty
-          WHEN m.type IN ('sold','used_in_jo','transfer_out','return_supplier','damaged') THEN -m.qty
+          WHEN m.type IN ('receive','refund_in') THEN m.qty
+          WHEN m.type = 'sold' THEN -m.qty
           WHEN m.type = 'adjust' THEN m.qty
           ELSE 0
         END), 0) <= i.reorder_point THEN 1 ELSE 0 END AS below_reorder
@@ -98,6 +98,11 @@ export function registerStockHandlers(): void {
       WHERE i.active = 1
       GROUP BY i.id
       ORDER BY i.name
-    `).all().map((r: any) => ({ ...r, qty: r.qty || 0, value: (r.qty || 0) * r.cost, below_reorder: !!r.below_reorder }));
+    `).all().map((r: any) => ({
+      ...r,
+      qty: r.qty || 0,
+      value: Math.round((r.qty || 0) * r.cost * 100) / 100,
+      below_reorder: !!r.below_reorder,
+    }));
   });
 }

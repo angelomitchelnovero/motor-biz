@@ -1,86 +1,46 @@
 // Role-based permission matrix. Single source of truth — both renderer route guards
 // and IPC handlers use it. Renderer is for hiding UI; IPC enforcement is mandatory.
 
-export type Role = 'owner' | 'manager' | 'cashier' | 'mechanic' | 'inv_clerk' | 'accountant' | 'auditor';
+export type Role = 'owner' | 'manager' | 'cashier' | 'stock_clerk';
 
 export type Action =
   // items / inventory
   | 'item.create' | 'item.read' | 'item.update' | 'item.delete'
   | 'stock.receive' | 'stock.adjust' | 'stock.read'
-  // customers / vehicles / suppliers
-  | 'customer.create' | 'customer.read' | 'customer.update'
-  | 'vehicle.create' | 'vehicle.read' | 'vehicle.update'
-  | 'supplier.create' | 'supplier.read' | 'supplier.update'
-  // job orders
-  | 'jo.create' | 'jo.read' | 'jo.update' | 'jo.change_status' | 'jo.assign'
   // sales
   | 'pos.checkout' | 'sale.read' | 'sale.void' | 'sale.refund'
   // reports
-  | 'report.daily_sales' | 'report.stock' | 'report.commission' | 'report.bir_export'
+  | 'report.daily_sales'
   // admin
   | 'user.create' | 'user.read' | 'user.update'
-  | 'settings.read' | 'settings.write' | 'settings.series';
+  | 'settings.read' | 'settings.write';
 
 const ROLE_ACTIONS: Record<Role, Action[]> = {
   owner: [
     'item.create','item.read','item.update','item.delete',
     'stock.receive','stock.adjust','stock.read',
-    'customer.create','customer.read','customer.update',
-    'vehicle.create','vehicle.read','vehicle.update',
-    'supplier.create','supplier.read','supplier.update',
-    'jo.create','jo.read','jo.update','jo.change_status','jo.assign',
     'pos.checkout','sale.read','sale.void','sale.refund',
-    'report.daily_sales','report.stock','report.commission','report.bir_export',
+    'report.daily_sales',
     'user.create','user.read','user.update',
-    'settings.read','settings.write','settings.series',
+    'settings.read','settings.write',
   ],
   manager: [
     'item.create','item.read','item.update',
     'stock.receive','stock.adjust','stock.read',
-    'customer.create','customer.read','customer.update',
-    'vehicle.create','vehicle.read','vehicle.update',
-    'supplier.create','supplier.read','supplier.update',
-    'jo.create','jo.read','jo.update','jo.change_status','jo.assign',
     'pos.checkout','sale.read','sale.void','sale.refund',
-    'report.daily_sales','report.stock','report.commission','report.bir_export',
+    'report.daily_sales',
     'user.read',
     'settings.read',
   ],
   cashier: [
     'item.read','stock.read',
-    'customer.create','customer.read','customer.update',
-    'vehicle.create','vehicle.read','vehicle.update',
-    'jo.read',
     'pos.checkout','sale.read','sale.void',
     'report.daily_sales',
   ],
-  mechanic: [
-    'item.read','stock.read',
-    'customer.read','vehicle.read',
-    'jo.read','jo.update','jo.change_status','jo.assign',
-    'report.commission', // own only — filtered in handler
-  ],
-  inv_clerk: [
+  stock_clerk: [
     'item.create','item.read','item.update',
     'stock.receive','stock.adjust','stock.read',
-    'customer.read','supplier.create','supplier.read','supplier.update',
-    'jo.read',
-    'report.stock',
-  ],
-  accountant: [
-    'item.read','stock.read',
-    'customer.read','vehicle.read','supplier.read',
-    'jo.read',
-    'sale.read',
-    'report.daily_sales','report.stock','report.commission','report.bir_export',
-    'user.read','settings.read',
-  ],
-  auditor: [
-    'item.read','stock.read',
-    'customer.read','vehicle.read','supplier.read',
-    'jo.read','sale.read',
-    'report.daily_sales','report.stock','report.commission','report.bir_export',
-    'user.read','settings.read',
+    'report.daily_sales',
   ],
 };
 

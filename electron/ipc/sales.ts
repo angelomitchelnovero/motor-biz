@@ -1,26 +1,30 @@
-// POS checkout — atomic across sale, sale_lines, payments, stock_movements, JO status.
+// POS checkout — atomic across sale, sale_lines, stock_movements.
 
-import { ipcMain } from 'electron';
+import { ipcMain, app } from 'electron';
+import path from 'node:path';
 import { getDb } from '../db';
 import { requireUser } from './auth';
 import { record } from '../services/audit';
 import { assertCan } from '../services/permissions';
-import { allocate, formatSaleNumber, ReceiptSeriesExhaustedError } from '../services/receiptNumber';
-import { recordMovement, stockOnHand, hasStockForSale } from '../services/stockLedger';
+import { recordMovement, hasStockForSale } from '../services/stockLedger';
 import { lineTotal } from '../services/pricing';
-import { computeVat, applyScPwd } from '../services/vat';
 import { renderReceiptPdf } from '../services/receiptPdf';
 
+type PaymentMethod = 'cash' | 'gcash' | 'card' | 'other';
+
+interface CheckoutLine {
+  item_id?: number | null;
+  description: string;
+  qty: number;
+  unit_price: number;
+  line_discount?: number;
+}
+
 interface CheckoutInput {
-  jo_id?: number | null;
-  customer_id?: number | null;
-  vehicle_id?: number | null;
-  document_type: 'SI' | 'OR';
-  series_id: number;
-  lines: any[];
-  payments: any[];
-  sc_pwd?: { kind: 'SC' | 'PWD'; id_no: string; name: string } | null;
-  odometer?: number | null;
+  lines: CheckoutLine[];
+  payment_method: PaymentMethod;
+  tendered: number;
+  customer_name?: string | null;
 }
 
 export function registerSalesHandlers(): void {
@@ -28,186 +32,107 @@ export function registerSalesHandlers(): void {
     const u = requireUser();
     assertCan(u.role, 'pos.checkout');
     if (!input.lines?.length) throw new Error('Cart is empty');
-    if (!input.payments?.length) throw new Error('No payments');
+    if (input.tendered == null || input.tendered < 0) throw new Error('Tendered amount required');
 
     const db = getDb();
-    const totals = computeTotals(input);
-    if (totals.totalPaid < totals.total - 0.01) throw new Error('Insufficient payment');
+    const total = computeTotal(input.lines);
+    if (input.tendered < total - 0.01) throw new Error('Insufficient payment');
+    const change_due = Math.max(0, Math.round((input.tendered - total) * 100) / 100);
 
     const result = db.transaction(() => {
-      // 1. allocate receipt number (must be in this txn for the lock to hold)
-      let allocated;
-      try {
-        allocated = allocate(db, input.series_id);
-      } catch (e) {
-        if (e instanceof ReceiptSeriesExhaustedError) throw e;
-        throw e;
-      }
-      const sale_number = formatSaleNumber(allocated.prefix, allocated.number);
-
-      // 2. insert sale
-      const change_due = Math.max(0, Math.round((totals.totalPaid - totals.total) * 100) / 100);
+      // 1. insert sale (sale_number derived from id)
       const saleInfo = db.prepare(`
-        INSERT INTO sales (
-          sale_number, document_type, series_id, vehicle_id, jo_id, customer_id, cashier_id,
-          subtotal, discount_total, sc_pwd_discount, sc_pwd_kind, sc_pwd_id_no, sc_pwd_name,
-          vatable_sale, vat_exempt, zero_rated, vat_amount, total,
-          tender_cash, tender_gcash, tender_maya, tender_card, tender_bank, tender_charge,
-          change_due, status
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?,
-          ?, 'completed'
-        )
+        INSERT INTO sales (sale_number, cashier_id, payment_method, tendered, total, change_due, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'completed')
       `).run(
-        sale_number, input.document_type, input.series_id, input.vehicle_id ?? null, input.jo_id ?? null, input.customer_id ?? null, u.id,
-        totals.subtotal, totals.discountTotal, totals.scPwdDiscount,
-        input.sc_pwd?.kind ?? null, input.sc_pwd?.id_no ?? null, input.sc_pwd?.name ?? null,
-        totals.vat.vatable_sale, totals.vat.vat_exempt, totals.vat.zero_rated, totals.vat.vat_amount, totals.total,
-        totals.byMethod.cash, totals.byMethod.gcash, totals.byMethod.maya, totals.byMethod.card, totals.byMethod.bank, totals.byMethod.charge,
+        'TEMP', // placeholder; replaced after we know the id
+        u.id,
+        input.payment_method,
+        input.tendered,
+        total,
         change_due,
       );
       const saleId = saleInfo.lastInsertRowid as number;
+      const sale_number = formatSaleNumber(saleId);
+
+      // 2. update sale_number now that we have id
+      db.prepare(`UPDATE sales SET sale_number = ? WHERE id = ?`).run(sale_number, saleId);
 
       // 3. insert sale_lines + stock movements for parts
       const insLine = db.prepare(`
-        INSERT INTO sale_lines (sale_id, kind, item_id, description, qty, unit_price, line_discount, vat_type, line_total, mechanic_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sale_lines (sale_id, item_id, description, qty, unit_price, line_discount, line_total)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       for (const l of input.lines) {
-        if (l.kind === 'part' && l.item_id) {
-          if (!hasStockForSale(db, l.item_id, l.qty)) {
+        const qty = l.qty ?? 1;
+        const unit_price = l.unit_price ?? 0;
+        const line_discount = l.line_discount ?? 0;
+        if (l.item_id) {
+          if (!hasStockForSale(db, l.item_id, qty)) {
             throw new Error(`Insufficient stock for: ${l.description}`);
           }
         }
-        insLine.run(
-          saleId, l.kind ?? 'service', l.item_id ?? null, l.description,
-          l.qty ?? 1, l.unit_price ?? 0, l.line_discount ?? 0,
-          l.vat_type ?? 'vatable',
-          lineTotal(l.qty ?? 1, l.unit_price ?? 0, l.line_discount ?? 0),
-          l.mechanic_id ?? null,
-        );
+        insLine.run(saleId, l.item_id ?? null, l.description, qty, unit_price, line_discount, lineTotal(qty, unit_price, line_discount));
       }
 
-      // 4. stock movements (parts sold = 'sold', JO-released parts = 'used_in_jo')
-      const isFromJo = !!input.jo_id;
+      // 4. stock movements for parts
       for (const l of input.lines) {
-        if (l.kind === 'part' && l.item_id) {
+        if (l.item_id) {
           recordMovement(db, {
             item_id: l.item_id,
-            type: isFromJo ? 'used_in_jo' : 'sold',
-            qty: l.qty,
+            type: 'sold',
+            qty: l.qty ?? 1,
             unit_cost: 0,
-            reference_type: isFromJo ? 'job_order' : 'sale',
-            reference_id: isFromJo ? (input.jo_id as number) : saleId,
-            reason: isFromJo ? `JO ${input.jo_id} → sale` : `Sale ${sale_number}`,
+            reference_type: 'sale',
+            reference_id: saleId,
+            reason: `Sale ${sale_number}`,
             user_id: u.id,
           });
         }
       }
 
-      // 5. payments
-      const insPay = db.prepare(`INSERT INTO payments (sale_id, method, amount, reference_no) VALUES (?, ?, ?, ?)`);
-      for (const p of input.payments) {
-        if (!p.amount || p.amount <= 0) continue;
-        insPay.run(saleId, p.method, p.amount, p.reference_no ?? null);
-      }
-
-      // 6. transition JO if applicable
-      if (input.jo_id) {
-        db.prepare(`UPDATE job_orders SET status = 'released', released_at = datetime('now') WHERE id = ? AND status IN ('ready','awaiting_parts','in_progress','queued')`)
-          .run(input.jo_id);
-        db.prepare(`INSERT INTO jo_status_log (jo_id, status, changed_by, note) VALUES (?, 'released', ?, ?)`)
-          .run(input.jo_id, u.id, `Charged via sale ${sale_number}`);
-      }
-
-      // 7. vehicle odometer update
-      if (input.vehicle_id && input.odometer != null) {
-        db.prepare(`UPDATE vehicles SET current_odometer = ? WHERE id = ?`).run(input.odometer, input.vehicle_id);
-      }
-
       record(db, u.id, 'checkout', 'sales', saleId, null, {
-        sale_number, total: totals.total, lines: input.lines.length,
+        sale_number, total, lines: input.lines.length,
       });
 
-      return { saleId, sale_number, allocated, totals, change_due };
+      return { saleId, sale_number, total, change_due };
     })();
 
-    // 8. render PDF outside the txn
-    const settings = JSON.parse((getDb().prepare(`SELECT value FROM settings WHERE key = 'business_name'`).get() as any).value);
-    const settingsRow = (key: string) => JSON.parse(((getDb().prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as any)?.value) ?? '""');
-    const settingsObj = {
-      business_name: settingsRow('business_name'),
-      address1: settingsRow('address1'),
-      address2: settingsRow('address2'),
-      tin: settingsRow('tin'),
-      vat_reg_tin: settingsRow('vat_reg_tin'),
-      bir_atp_sn: settingsRow('bir_atp_sn'),
-      bir_atp_min: settingsRow('bir_atp_min'),
-      bir_atp_date: settingsRow('bir_atp_date'),
-      vat_mode: settingsRow('vat_mode'),
-      sc_discount_pct: settingsRow('sc_discount_pct'),
-      pwd_discount_pct: settingsRow('pwd_discount_pct'),
-      default_branch: settingsRow('default_branch'),
-      default_terminal: settingsRow('default_terminal'),
-    };
-
-    const fullSale = getDb().prepare(`
-      SELECT s.*, c.name AS customer_name, v.plate_number AS vehicle_plate,
-        (v.make || ' ' || COALESCE(v.model,'')) AS vehicle_label,
-        cb.full_name AS cashier_name
+    // 5. render PDF outside the txn
+    const settings = readReceiptSettings(db);
+    const fullSale = db.prepare(`
+      SELECT s.sale_number, s.created_at, s.payment_method, s.tendered, s.total, s.change_due,
+             u.full_name AS cashier_name
       FROM sales s
-      LEFT JOIN customers c ON c.id = s.customer_id
-      LEFT JOIN vehicles v ON v.id = s.vehicle_id
-      LEFT JOIN users cb ON cb.id = s.cashier_id
+      JOIN users u ON u.id = s.cashier_id
       WHERE s.id = ?
-    `).get(result.saleId);
+    `).get(result.saleId) as any;
 
-    const saleLines = getDb().prepare(`SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY id`).all(result.saleId);
+    const saleLines = db.prepare(`SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY id`).all(result.saleId) as any[];
 
     const pdfPath = await renderReceiptPdf({
       sale_number: result.sale_number,
-      document_type: input.document_type,
-      series_prefix: result.allocated.prefix,
-      series_number: result.allocated.number,
-      created_at: (fullSale as any).created_at,
-      cashier_name: (fullSale as any).cashier_name,
-      customer_name: (fullSale as any).customer_name,
-      vehicle_plate: (fullSale as any).vehicle_plate,
-      vehicle_label: (fullSale as any).vehicle_label,
-      lines: saleLines as any,
-      subtotal: result.totals.subtotal,
-      discount_total: result.totals.discountTotal,
-      sc_pwd_kind: input.sc_pwd?.kind ?? null,
-      sc_pwd_discount: result.totals.scPwdDiscount,
-      sc_pwd_id_no: input.sc_pwd?.id_no ?? null,
-      sc_pwd_name: input.sc_pwd?.name ?? null,
-      vatable_sale: result.totals.vat.vatable_sale,
-      vat_exempt: result.totals.vat.vat_exempt,
-      zero_rated: result.totals.vat.zero_rated,
-      vat_amount: result.totals.vat.vat_amount,
-      total: result.totals.total,
-      tender_cash: result.totals.byMethod.cash,
-      tender_gcash: result.totals.byMethod.gcash,
-      tender_maya: result.totals.byMethod.maya,
-      tender_card: result.totals.byMethod.card,
-      tender_bank: result.totals.byMethod.bank,
-      tender_charge: result.totals.byMethod.charge,
+      created_at: fullSale.created_at,
+      cashier_name: fullSale.cashier_name,
+      customer_name: input.customer_name ?? null,
+      lines: saleLines.map((l) => ({
+        description: l.description,
+        qty: l.qty,
+        unit_price: l.unit_price,
+        line_discount: l.line_discount,
+        line_total: l.line_total,
+      })),
+      total: result.total,
+      payment_method: input.payment_method,
+      tendered: input.tendered,
       change_due: result.change_due,
-      settings: settingsObj,
+      settings,
     });
 
     return {
       id: result.saleId,
       sale_number: result.sale_number,
-      document_type: input.document_type,
-      total: result.totals.total,
-      vat_amount: result.totals.vat.vat_amount,
-      vatable_sale: result.totals.vat.vatable_sale,
-      vat_exempt: result.totals.vat.vat_exempt,
-      zero_rated: result.totals.vat.zero_rated,
+      total: result.total,
       change_due: result.change_due,
       receipt_pdf_path: pdfPath,
     };
@@ -222,7 +147,7 @@ export function registerSalesHandlers(): void {
       const sale = db.prepare(`SELECT status FROM sales WHERE id = ?`).get(sale_id) as { status: string } | undefined;
       if (!sale) throw new Error('Sale not found');
       if (sale.status !== 'completed') throw new Error('Sale is not in completed state');
-      const lines = db.prepare(`SELECT * FROM sale_lines WHERE sale_id = ? AND kind = 'part' AND item_id IS NOT NULL`).all(sale_id);
+      const lines = db.prepare(`SELECT * FROM sale_lines WHERE sale_id = ? AND item_id IS NOT NULL`).all(sale_id);
       for (const l of lines as any[]) {
         recordMovement(db, {
           item_id: l.item_id,
@@ -241,42 +166,13 @@ export function registerSalesHandlers(): void {
     tx();
   });
 
-  ipcMain.handle('sales:refund', (_e, sale_id: number, reason: string) => {
-    const u = requireUser();
-    assertCan(u.role, 'sale.refund');
-    if (!reason) throw new Error('Refund reason is required');
-    const db = getDb();
-    const tx = db.transaction(() => {
-      const sale = db.prepare(`SELECT status FROM sales WHERE id = ?`).get(sale_id) as { status: string } | undefined;
-      if (!sale) throw new Error('Sale not found');
-      if (sale.status !== 'completed') throw new Error('Sale is not in completed state');
-      const lines = db.prepare(`SELECT * FROM sale_lines WHERE sale_id = ? AND kind = 'part' AND item_id IS NOT NULL`).all(sale_id);
-      for (const l of lines as any[]) {
-        recordMovement(db, {
-          item_id: l.item_id,
-          type: 'refund_in',
-          qty: l.qty,
-          unit_cost: 0,
-          reference_type: 'sale',
-          reference_id: sale_id,
-          reason: `Refund: ${reason}`,
-          user_id: u.id,
-        });
-      }
-      db.prepare(`UPDATE sales SET status = 'refunded', void_reason = ? WHERE id = ?`).run(reason, sale_id);
-      record(db, u.id, 'refund_sale', 'sales', sale_id, null, { reason });
-    });
-    tx();
-  });
-
   ipcMain.handle('sales:get', (_e, id: number) => {
     const u = requireUser();
     assertCan(u.role, 'sale.read');
     const db = getDb();
     const sale = db.prepare(`SELECT * FROM sales WHERE id = ?`).get(id);
     const lines = db.prepare(`SELECT * FROM sale_lines WHERE sale_id = ? ORDER BY id`).all(id);
-    const payments = db.prepare(`SELECT * FROM payments WHERE sale_id = ? ORDER BY id`).all(id);
-    return { sale, lines, payments };
+    return { sale, lines };
   });
 
   ipcMain.handle('sales:previewReceipt', (_e, id: number) => {
@@ -285,46 +181,38 @@ export function registerSalesHandlers(): void {
     const db = getDb();
     const sale = db.prepare(`SELECT sale_number FROM sales WHERE id = ?`).get(id) as { sale_number: string } | undefined;
     if (!sale) throw new Error('Sale not found');
-    const path = require('node:path').join(require('electron').app.getPath('userData'), 'receipts', `${sale.sale_number}.pdf`);
-    return path;
+    return path.join(app.getPath('userData'), 'receipts', `${sale.sale_number}.pdf`);
   });
 }
 
 // ---------- total computation ----------
 
-function computeTotals(input: CheckoutInput) {
-  const lineTotals = input.lines.map((l) => ({
-    line_total: lineTotal(l.qty ?? 1, l.unit_price ?? 0, l.line_discount ?? 0),
-    vat_type: l.vat_type ?? 'vatable',
-  }));
-
-  const subtotal = Math.round(lineTotals.reduce((s, l) => s + l.line_total, 0) * 100) / 100;
-  const discountTotal = 0;
-
-  let scPwdDiscount = 0;
-  if (input.sc_pwd) {
-    const pct = input.sc_pwd.kind === 'SC' ? readSettingNumber('sc_discount_pct') : readSettingNumber('pwd_discount_pct');
-    scPwdDiscount = applyScPwd(lineTotals, pct);
+function computeTotal(lines: CheckoutLine[]): number {
+  let total = 0;
+  for (const l of lines) {
+    total += lineTotal(l.qty ?? 1, l.unit_price ?? 0, l.line_discount ?? 0);
   }
-  const vat = computeVat(lineTotals, scPwdDiscount, !!input.sc_pwd);
-  const total = Math.round((vat.vatable_sale + vat.vat_amount + vat.vat_exempt + vat.zero_rated) * 100) / 100;
-
-  const byMethod = { cash: 0, gcash: 0, maya: 0, card: 0, bank: 0, charge: 0 };
-  let totalPaid = 0;
-  for (const p of input.payments) {
-    if (p.amount > 0) {
-      (byMethod as any)[p.method] = (byMethod as any)[p.method] + p.amount;
-      totalPaid += p.amount;
-    }
-  }
-  totalPaid = Math.round(totalPaid * 100) / 100;
-
-  return { subtotal, discountTotal, scPwdDiscount, vat, total, byMethod, totalPaid };
+  return Math.round(total * 100) / 100;
 }
 
-function readSettingNumber(key: string): number {
-  const db = getDb();
-  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as { value: string } | undefined;
-  if (!row) return 0;
-  try { return JSON.parse(row.value); } catch { return 0; }
+function formatSaleNumber(id: number): string {
+  return `INV-${String(id).padStart(7, '0')}`;
+}
+
+function readReceiptSettings(db: any): { business_name: string; address1: string; address2: string } {
+  const read = (k: string, fallback: string) => {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(k) as { value: string } | undefined;
+    if (!row) return fallback;
+    try {
+      const parsed = JSON.parse(row.value);
+      return typeof parsed === 'string' ? parsed : fallback;
+    } catch {
+      return row.value || fallback;
+    }
+  };
+  return {
+    business_name: read('business_name', 'My Motor Shop'),
+    address1: read('address1', ''),
+    address2: read('address2', ''),
+  };
 }

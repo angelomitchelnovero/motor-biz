@@ -6,11 +6,18 @@ import { assertCan } from '../services/permissions';
 import { stockOnHand, stockValue } from '../services/stockLedger';
 
 interface ItemRow {
-  id: number; sku: string; barcode: string | null; part_number: string; oem_ref: string;
-  name: string; category: string; brand: string; unit: string;
-  cost: number; price: number; markup_pct: number;
-  reorder_point: number; reorder_qty: number;
-  preferred_supplier_id: number | null; location: string; active: number;
+  id: number;
+  sku: string;
+  barcode: string | null;
+  name: string;
+  category: string;
+  brand: string;
+  unit: string;
+  cost: number;
+  price: number;
+  reorder_point: number;
+  location: string;
+  active: number;
 }
 
 function hydrateItem(row: ItemRow) {
@@ -23,6 +30,8 @@ function hydrateItem(row: ItemRow) {
   };
 }
 
+const UPDATABLE = ['barcode','name','category','brand','unit','cost','price','reorder_point','location','active'] as const;
+
 export function registerItemHandlers(): void {
   ipcMain.handle('items:list', (_e, q?: string) => {
     const u = requireUser();
@@ -32,9 +41,9 @@ export function registerItemHandlers(): void {
       const like = `%${q.trim()}%`;
       const rows = db.prepare(
         `SELECT * FROM items
-         WHERE active = 1 AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR part_number LIKE ?)
+         WHERE active = 1 AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ?)
          ORDER BY name LIMIT 100`,
-      ).all(like, like, like, like) as ItemRow[];
+      ).all(like, like, like) as ItemRow[];
       return rows.map(hydrateItem);
     }
     const rows = db.prepare(`SELECT * FROM items WHERE active = 1 ORDER BY name LIMIT 100`).all() as ItemRow[];
@@ -65,25 +74,19 @@ export function registerItemHandlers(): void {
     const exists = db.prepare(`SELECT 1 FROM items WHERE sku = ?`).get(input.sku);
     if (exists) throw new Error('SKU already exists');
     const info = db.prepare(`
-      INSERT INTO items (sku, barcode, part_number, oem_ref, name, category, brand, unit,
-                         cost, price, markup_pct, reorder_point, reorder_qty,
-                         preferred_supplier_id, location, active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO items (sku, barcode, name, category, brand, unit,
+                         cost, price, reorder_point, location, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.sku,
       input.barcode ?? null,
-      input.part_number ?? '',
-      input.oem_ref ?? '',
       input.name,
       input.category ?? '',
       input.brand ?? '',
       input.unit ?? 'pc',
       input.cost ?? 0,
       input.price ?? 0,
-      input.markup_pct ?? 0,
       input.reorder_point ?? 0,
-      input.reorder_qty ?? 0,
-      input.preferred_supplier_id ?? null,
       input.location ?? '',
       1,
     );
@@ -99,10 +102,9 @@ export function registerItemHandlers(): void {
     const db = getDb();
     const before = db.prepare(`SELECT * FROM items WHERE id = ?`).get(id) as ItemRow | undefined;
     if (!before) throw new Error('Item not found');
-    const fields = ['barcode','part_number','oem_ref','name','category','brand','unit','cost','price','markup_pct','reorder_point','reorder_qty','preferred_supplier_id','location','active'];
     const sets: string[] = [];
     const vals: any[] = [];
-    for (const f of fields) {
+    for (const f of UPDATABLE) {
       if (input[f] !== undefined) {
         sets.push(`${f} = ?`);
         vals.push(input[f]);

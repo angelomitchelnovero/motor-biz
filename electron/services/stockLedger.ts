@@ -3,12 +3,14 @@
 
 import type Database from 'better-sqlite3';
 
+export type StockMovementType = 'receive' | 'adjust' | 'sold' | 'refund_in';
+
 export function stockOnHand(db: Database.Database, itemId: number): number {
   const row = db.prepare(`
     SELECT COALESCE(SUM(
       CASE
-        WHEN type IN ('receive','transfer_in','refund_in') THEN qty
-        WHEN type IN ('sold','used_in_jo','transfer_out','return_supplier','damaged') THEN -qty
+        WHEN type IN ('receive','refund_in') THEN qty
+        WHEN type = 'sold' THEN -qty
         WHEN type = 'adjust' THEN qty  -- signed already
         ELSE 0
       END
@@ -19,7 +21,6 @@ export function stockOnHand(db: Database.Database, itemId: number): number {
 }
 
 // FIFO-ish value: weighted-average cost from recent receives (cheap and good enough for MVP).
-// Real FIFO would walk movements; for the MVP we use weighted average of open receive batches.
 export function stockValue(db: Database.Database, itemId: number): number {
   const qty = stockOnHand(db, itemId);
   if (qty <= 0) return 0;
@@ -40,7 +41,7 @@ export function recordMovement(
   db: Database.Database,
   args: {
     item_id: number;
-    type: 'receive' | 'adjust' | 'transfer_out' | 'transfer_in' | 'return_supplier' | 'damaged' | 'used_in_jo' | 'sold' | 'refund_in';
+    type: StockMovementType;
     qty: number;        // for 'adjust', may be negative; for others, positive magnitude
     unit_cost?: number;
     reference_type?: string | null;
